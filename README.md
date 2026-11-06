@@ -94,20 +94,38 @@ Khu vực kéo & thả tệp trực quan (Drag & Drop) cùng hệ thống **5 Ch
 
 ---
 
-## 📁 Cấu Trúc Thư Mục Dự Án
+## 📁 Cấu Trúc Thư Mục Dự Án (Kiến Trúc Module Hóa)
 
 ```text
 ├── .streamlit/
-│   └── config.toml          # Cấu hình giao diện Streamlit (Dark Theme, upload limit 25MB)
-├── .env.example             # Mẫu biến môi trường an toàn (KHÔNG chứa secret thực)
-├── .gitignore               # Loại trừ .env, .venv, bytecode, cache tạm, file nhạy cảm
-├── app.py                   # Mã nguồn ứng dụng chính (Full UI, Dual Providers, 5 Extraction Modes)
-├── requirements.txt         # Danh sách dependencies chuẩn
-├── run.bat                  # Script khởi động nhanh 1-click cho người dùng Windows
-├── test_api.py              # Script CLI kiểm tra kết nối và tính hợp lệ của Gemini API Key
-├── test_sample.docx         # Tệp Word mẫu chuẩn dùng để test trích xuất bảng biểu
-├── test_sample.pdf          # Tệp PDF mẫu chuẩn dùng để test trích xuất Markdown
-└── README.md                # Tài liệu hướng dẫn sử dụng dự án
+│   └── config.toml             # Cấu hình giao diện Streamlit (Dark Theme, upload limit 25MB)
+├── modules/                    # Thư mục chứa các module xử lý nghiệp vụ, dịch vụ AI & tiện ích
+│   ├── __init__.py
+│   ├── ui_styles.py            # CSS tùy chỉnh giao diện (Hero card, live pulse, badges, audio dialog)
+│   ├── env_utils.py            # Xử lý đọc & lưu API Keys an toàn vào .env
+│   ├── audio_utils.py          # Tiện ích chuyển đổi âm thanh PCM 16-bit, WAV, Async runner
+│   ├── doc_parsers.py          # Bộ bóc tách tài liệu (pypdf, python-docx, MarkItDown, Docling, pdfium)
+│   ├── gemini_service.py       # Client & cấu hình bảo mật Google Gemini API
+│   ├── deepseek_service.py     # Client & xác thực OpenAI SDK cho DeepSeek API
+│   └── live_api_service.py     # Xử lý WebSocket Bidirectional Gemini Live API & Multimodal Audio
+├── views/                      # Thư mục chứa các View giao diện người dùng (Tabs & Sidebar)
+│   ├── __init__.py
+│   ├── sidebar_view.py         # Sidebar cấu hình API Keys & tham số sinh nội dung
+│   ├── chat_view.py            # Tab 1: Hội thoại Streaming đa Provider (Gemini & DeepSeek R1 CoT)
+│   ├── live_api_view.py        # Tab 2: Gemini Live API Studio (Voice, Audio STT, Live Translate)
+│   ├── vision_view.py          # Tab 3: Thị giác Đa phương thức (Multimodal Vision Gemini & DeepSeek)
+│   ├── doc_extract_view.py     # Tab 4: Trích xuất Tài liệu Thông minh (5 Chế độ chuyên sâu)
+│   ├── prompt_lab_view.py      # Tab 5: Prompt Lab & Các tác vụ AI có cấu trúc
+│   └── docs_view.py            # Tab 6: Hướng dẫn sử dụng & Bảng thông số mô hình
+├── .env.example                # Mẫu biến môi trường an toàn (KHÔNG chứa secret thực)
+├── .gitignore                  # Loại trừ .env, .venv, bytecode, cache tạm, file nhạy cảm
+├── app.py                      # File điều phối chính (Main Orchestrator ~150 dòng)
+├── requirements.txt            # Danh sách dependencies chuẩn
+├── run.bat                     # Script khởi động nhanh 1-click cho người dùng Windows
+├── test_api.py                 # Script CLI kiểm tra kết nối và tính hợp lệ của Gemini API Key
+├── test_sample.docx            # Tệp Word mẫu chuẩn dùng để test trích xuất bảng biểu
+├── test_sample.pdf             # Tệp PDF mẫu chuẩn dùng để test trích xuất Markdown
+└── README.md                   # Tài liệu hướng dẫn sử dụng dự án
 ```
 
 ---
