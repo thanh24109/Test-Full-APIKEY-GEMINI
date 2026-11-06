@@ -390,3 +390,4 @@ def extract_with_docling(file_bytes: bytes, filename: str):
                 os.remove(tmp_path)
             except Exception:
                 pass
+

@@ -107,3 +107,4 @@ def render_prompt_lab_tab(config: Dict[str, Any]) -> None:
                         st.error(f"❌ Lỗi API ({e.code}): {e.message}")
                     except Exception as e:
                         st.error(f"❌ Lỗi: {str(e)}")
+

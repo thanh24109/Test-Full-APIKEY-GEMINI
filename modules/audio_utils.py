@@ -49,3 +49,4 @@ def run_async_in_thread(coro_fn, *args, **kwargs):
             new_loop.close()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         return executor.submit(runner).result()
+

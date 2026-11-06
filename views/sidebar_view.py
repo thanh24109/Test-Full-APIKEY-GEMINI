@@ -303,3 +303,4 @@ def render_sidebar() -> Dict[str, Any]:
         "system_instruction": system_instruction,
         "client_config": client_config,
     }
+

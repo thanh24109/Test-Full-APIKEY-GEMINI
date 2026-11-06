@@ -3,6 +3,9 @@ Gemini & DeepSeek API Explorer
 A modular Streamlit application for interacting with Google Gemini (including Live API)
 and DeepSeek AI models.
 """
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import streamlit as st
 
 from modules.ui_styles import apply_custom_css

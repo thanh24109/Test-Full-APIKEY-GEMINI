@@ -43,3 +43,4 @@ def validate_deepseek_api_key(api_key: str):
         return False, "DeepSeek API Key không hợp lệ hoặc đã hết hạn (401 Unauthorized). Hãy kiểm tra lại tại platform.deepseek.com.", []
     except Exception as e:
         return False, f"Lỗi kết nối DeepSeek: {str(e)}", []
+

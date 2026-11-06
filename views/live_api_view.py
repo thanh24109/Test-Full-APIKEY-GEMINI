@@ -715,3 +715,4 @@ def render_live_api_tab(active_key: str) -> None:
                         st.rerun()
                     else:
                         st.error(f"❌ {err}")
+

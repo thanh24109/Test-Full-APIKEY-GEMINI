@@ -254,3 +254,4 @@ def render_chat_tab(config: Dict[str, Any]) -> None:
                             "provider": "gemini",
                             "time": 0
                         })
+

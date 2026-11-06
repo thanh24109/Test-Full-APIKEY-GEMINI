@@ -183,3 +183,4 @@ for chunk in stream:
             
             💡 *Ghi chú: `deepseek-chat` (V3) và `deepseek-reasoner` (R1) là các định danh thế hệ trước được DeepSeek duy trì làm alias tương thích ngược.*
             """)
+

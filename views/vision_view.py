@@ -272,3 +272,4 @@ def render_vision_tab(config: Dict[str, Any]) -> None:
                 mime="text/plain",
                 key="download_cached_ocr_btn"
             )
+
