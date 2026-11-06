@@ -36,14 +36,32 @@
 
 ---
 
-### 3. 🖼️ Thị giác Đa phương thức (Multimodal Vision)
+### 3. 🎙️ Gemini Live API — Voice, Audio & Realtime STT Studio
+Tích hợp giao thức kết nối thời gian thực **Gemini Live API (Bidirectional WebSocket Streaming)** trực tiếp từ Google GenAI SDK:
+- **🗣️ Hội thoại Giọng nói Trực tiếp (Speech-to-Speech & Voice Dialog):**
+  - Ghi âm micro trực tiếp qua trình duyệt (`st.audio_input`), tải tệp âm thanh (WAV, MP3, M4A, OGG) hoặc gửi câu hỏi văn bản.
+  - Phản hồi âm thanh nguyên bản (**Native PCM 24kHz Studio Quality**), tự động phát và cho phép tải file `.wav`.
+  - Tự động hiển thị văn bản phiên âm hai chiều: *Lời người dùng nói (STT)* và *Câu trả lời của Gemini*.
+- **📝 Chuyển Giọng nói thành Văn bản theo Thời gian thực (Realtime Transcribe Live STT):**
+  - Sử dụng model chuyên dụng `gemini-3.5-transcribe-live` hoặc `Gemini Flash Multimodal Audio`.
+  - Bóc tách văn bản chuẩn xác từng từ từ bài giảng, cuộc họp, phỏng vấn; đếm số từ, ký tự, xuất file `.txt` và `.md`.
+- **🌐 Dịch thuật Giọng nói Tức thì (Live Audio Translate):**
+  - Hỗ trợ model `gemini-3.5-live-translate-preview`. Dịch phát âm giọng nói tức thì giữa các ngôn ngữ (Việt, Anh, Nhật, Hàn, Trung, Pháp, Đức).
+- **🧠 Hội thoại AI Thời gian thực & Suy luận Sâu (Extended Thinking CoT):**
+  - Duy trì phiên hội thoại đa lượt (*Multi-turn Live Dialog Session*).
+  - Kết hợp mô hình `gemini-3.8-live-extended-thinking` với các mức độ suy luận (`LOW`, `MEDIUM`, `HIGH`) để trực quan hóa quá trình tư duy logic (*Thinking Process*) của AI trước khi phát ra câu trả lời bằng giọng nói.
+- **Tùy chọn 5 giọng đọc AI chuẩn Studio (Prebuilt Voices):** `Aoede` (Nữ trong trẻo), `Kore` (Nữ dịu dàng), `Puck` (Nam tự nhiên), `Charon` (Nam trầm ấm), `Fenrir` (Nam dứt khoát).
+
+---
+
+### 4. 🖼️ Thị giác Đa phương thức (Multimodal Vision)
 - Tải lên hình ảnh dung lượng lên đến 25MB (PNG, JPG, JPEG, WEBP).
 - Nhận diện ký tự quang học (OCR) cực kỳ chi tiết, đọc bảng số liệu, phân tích giao diện UI/UX và giải thích biểu đồ phức tạp.
 - Tải nhanh kết quả phân tích về máy dưới định dạng văn bản `.txt`.
 
 ---
 
-### 4. 📄 Trích xuất Tài liệu Thông minh (PDF, DOCX, PPTX, XLSX, HTML, Ảnh)
+### 5. 📄 Trích xuất Tài liệu Thông minh (PDF, DOCX, PPTX, XLSX, HTML, Ảnh)
 Khu vực kéo & thả tệp trực quan (Drag & Drop) cùng hệ thống **5 Chế độ trích xuất chuyên sâu**:
 
 | Chế độ | Công nghệ / Thư viện | Tốc độ | Quota / Chi phí | Nhận diện Tài liệu Scan / Ảnh | Đầu ra Markdown |
@@ -62,16 +80,17 @@ Khu vực kéo & thả tệp trực quan (Drag & Drop) cùng hệ thống **5 Ch
 
 ---
 
-### 5. ⚡ Prompt Lab & Mẫu Tác vụ Tự động
+### 6. ⚡ Prompt Lab & Mẫu Tác vụ Tự động
 - Tích hợp các bộ prompt chuẩn mực: Tóm tắt văn bản, Dịch thuật đa ngữ, Viết code & Unit Test, Trích xuất dữ liệu có cấu trúc JSON.
 
 ---
 
-### 6. 📚 Tra cứu Thông số & Bảng Giá API (Pricing Reference)
+### 7. 📚 Tra cứu Thông số & Bảng Giá API (Pricing Reference)
 - Bảng tổng hợp chi phí token minh bạch từ tài liệu chính thức:
   - **`deepseek-flash`**: Model **rẻ nhất** của DeepSeek ($0.003 - $0.006 / 1M token cache hit, $0.15 - $0.30 input), hỗ trợ đầy đủ cả Vision và Thinking.
   - **`deepseek-v4-pro` & `deepseek-chat` (V3)**: Tối ưu cho code và tác vụ ngôn ngữ.
   - **`gemini-2.5-flash` / `gemini-3.5-flash`**: Tối ưu tốc độ, ngữ cảnh 1 triệu token.
+  - **`Gemini Live API Models`**: Danh sách 6 mô hình hỗ trợ WebSocket Streaming, âm thanh native và suy luận sâu.
 
 ---
 

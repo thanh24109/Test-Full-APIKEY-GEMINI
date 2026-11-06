@@ -4,10 +4,20 @@ import json
 import io
 import base64
 import tempfile
+import asyncio
+import wave
+import concurrent.futures
 from pathlib import Path
 from PIL import Image
 import streamlit as st
 from dotenv import load_dotenv
+
+# Audio manipulation library for Gemini Live API
+try:
+    import pydub
+    PYDUB_AVAILABLE = True
+except ImportError:
+    PYDUB_AVAILABLE = False
 
 # Document processing libraries
 try:
@@ -144,6 +154,65 @@ st.markdown("""
         font-size: 0.8rem;
         font-family: monospace;
         margin-right: 6px;
+    }
+
+    /* ========================================================
+       Gemini Live API Voice Studio Styling
+       ======================================================== */
+    .live-badge {
+        background: linear-gradient(90deg, #ef4444, #f97316);
+        color: white;
+        padding: 3px 12px;
+        border-radius: 9999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+    }
+    .live-pulse-dot {
+        width: 8px;
+        height: 8px;
+        background-color: #ffffff;
+        border-radius: 50%;
+        display: inline-block;
+        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+        animation: live-pulse 1.6s infinite;
+    }
+    @keyframes live-pulse {
+        0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+        70% { transform: scale(1.15); box-shadow: 0 0 0 8px rgba(255, 255, 255, 0); }
+        100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+    }
+    .voice-studio-card {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.95) 100%);
+        border: 1px solid rgba(129, 140, 248, 0.3);
+        border-radius: 14px;
+        padding: 20px;
+        margin-bottom: 18px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+    .dialog-turn-user {
+        background: rgba(49, 46, 129, 0.35);
+        border: 1px solid rgba(99, 102, 241, 0.35);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+    }
+    .dialog-turn-ai {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 16px;
+    }
+    audio {
+        width: 100% !important;
+        border-radius: 8px !important;
+        margin-top: 6px !important;
+        margin-bottom: 6px !important;
     }
 
     /* Streamlit components refinement */
@@ -680,6 +749,260 @@ def validate_gemini_api_key(api_key: str):
     except Exception as e:
         return False, f"Lỗi kết nối: {str(e)}", []
 
+# ========================================================
+# Gemini Live API & Audio Processing Utilities
+# ========================================================
+def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1, sample_width: int = 2) -> bytes:
+    """Convert raw 16-bit PCM bytes from Gemini Live API into a standard WAV audio file."""
+    if not pcm_bytes:
+        return b""
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    return wav_io.getvalue()
+
+def audio_to_pcm16(audio_bytes: bytes, target_sr: int = 16000) -> bytes:
+    """Convert input audio (WAV, MP3, M4A, OGG) to 16-bit 16kHz mono PCM for Gemini Live API."""
+    if not audio_bytes:
+        return b""
+    if PYDUB_AVAILABLE:
+        try:
+            seg = pydub.AudioSegment.from_file(io.BytesIO(audio_bytes))
+            seg = seg.set_frame_rate(target_sr).set_channels(1).set_sample_width(2)
+            return seg.raw_data
+        except Exception:
+            pass
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            return wf.readframes(wf.getnframes())
+    except Exception:
+        return b""
+
+def run_async_in_thread(coro_fn, *args, **kwargs):
+    """Safely execute an asynchronous coroutine in an isolated thread with a fresh event loop."""
+    def runner():
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            return new_loop.run_until_complete(coro_fn(*args, **kwargs))
+        finally:
+            new_loop.close()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(runner).result()
+
+async def _execute_gemini_live_call(
+    api_key: str,
+    model: str,
+    user_text: str = None,
+    user_audio_bytes: bytes = None,
+    voice_name: str = "Aoede",
+    thinking_level: str = None,
+    system_instruction: str = None,
+    target_language_code: str = None,
+    timeout_sec: float = 30.0
+):
+    """
+    Connect to Gemini Live API WebSocket, stream inputs (audio/text),
+    and collect streaming 24kHz native audio + bidirectional transcriptions.
+    """
+    client = genai.Client(api_key=api_key)
+    
+    # Determine response modality: Transcribe uses TEXT, voice models use AUDIO
+    is_transcribe_model = ("transcribe" in model.lower())
+    response_modalities = ["TEXT"] if is_transcribe_model else ["AUDIO"]
+    
+    # Voice Config
+    speech_config = None
+    if response_modalities == ["AUDIO"] and voice_name:
+        speech_config = types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+            )
+        )
+        
+    # Extended Thinking Config
+    thinking_config = None
+    if "thinking" in model.lower():
+        lvl = types.ThinkingLevel.MEDIUM
+        if thinking_level == "LOW":
+            lvl = types.ThinkingLevel.LOW
+        elif thinking_level == "HIGH":
+            lvl = types.ThinkingLevel.HIGH
+        thinking_config = types.ThinkingConfig(thinking_level=lvl, include_thoughts=True)
+        
+    # Live Translate Config
+    translation_config = None
+    if "translate" in model.lower() and target_language_code:
+        translation_config = types.TranslationConfig(
+            target_language_code=target_language_code,
+            echo_target_language=True
+        )
+        
+    sys_content = None
+    if system_instruction and system_instruction.strip():
+        sys_content = types.Content(parts=[types.Part.from_text(text=system_instruction.strip())])
+        
+    config = types.LiveConnectConfig(
+        response_modalities=response_modalities,
+        speech_config=speech_config,
+        thinking_config=thinking_config,
+        translation_config=translation_config,
+        output_audio_transcription=types.AudioTranscriptionConfig() if response_modalities == ["AUDIO"] else None,
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction=sys_content
+    )
+    
+    pcm_chunks = []
+    output_transcription_text = ""
+    input_transcription_text = ""
+    thought_text = ""
+    model_turn_text = ""
+    
+    async with client.aio.live.connect(model=model, config=config) as session:
+        # Case 1: Audio input
+        if user_audio_bytes:
+            pcm_in = audio_to_pcm16(user_audio_bytes, target_sr=16000)
+            if pcm_in:
+                chunk_size = 3200  # 100ms chunks
+                for i in range(0, len(pcm_in), chunk_size):
+                    chunk = pcm_in[i:i+chunk_size]
+                    await session.send_realtime_input(
+                        audio=types.Blob(mime_type="audio/pcm;rate=16000", data=chunk)
+                    )
+                    await asyncio.sleep(0.01)
+                await session.send_realtime_input(audio_stream_end=True)
+            if user_text and user_text.strip():
+                await session.send_realtime_input(text=user_text.strip())
+        # Case 2: Text input
+        elif user_text and user_text.strip():
+            await session.send_client_content(
+                turns=types.Content(role="user", parts=[types.Part.from_text(text=user_text.strip())]),
+                turn_complete=True
+            )
+        else:
+            return False, "Không có dữ liệu âm thanh hoặc văn bản đầu vào.", {}
+            
+        async def collect_stream():
+            nonlocal pcm_chunks, output_transcription_text, input_transcription_text, thought_text, model_turn_text
+            async for resp in session.receive():
+                if resp.server_content:
+                    sc = resp.server_content
+                    if sc.input_transcription and sc.input_transcription.text:
+                        input_transcription_text += sc.input_transcription.text + " "
+                    if sc.output_transcription and sc.output_transcription.text:
+                        output_transcription_text += sc.output_transcription.text
+                    if sc.model_turn:
+                        for part in sc.model_turn.parts:
+                            if part.thought and part.text:
+                                thought_text += part.text
+                            elif part.text and not part.thought:
+                                model_turn_text += part.text
+                            if part.inline_data and part.inline_data.data:
+                                pcm_chunks.append(part.inline_data.data)
+                    if sc.turn_complete:
+                        break
+                        
+        await asyncio.wait_for(collect_stream(), timeout=timeout_sec)
+        
+    full_pcm = b"".join(pcm_chunks)
+    wav_bytes = pcm_to_wav(full_pcm, sample_rate=24000) if full_pcm else b""
+    duration_sec = (len(full_pcm) / 2) / 24000 if full_pcm else 0.0
+    final_text = (output_transcription_text or model_turn_text).strip()
+    
+    stats = {
+        "audio_wav": wav_bytes,
+        "duration_sec": duration_sec,
+        "pcm_bytes_count": len(full_pcm),
+        "chunks_count": len(pcm_chunks),
+        "output_text": final_text,
+        "input_text": input_transcription_text.strip(),
+        "thought_text": thought_text.strip(),
+        "model": model,
+        "voice": voice_name
+    }
+    return True, "", stats
+
+def call_gemini_live(
+    api_key: str,
+    model: str,
+    user_text: str = None,
+    user_audio_bytes: bytes = None,
+    voice_name: str = "Aoede",
+    thinking_level: str = None,
+    system_instruction: str = None,
+    target_language_code: str = None,
+    timeout_sec: float = 35.0
+):
+    """Synchronous wrapper to execute Gemini Live API call cleanly."""
+    if not api_key:
+        return False, "Vui lòng nhập và kiểm tra Gemini API Key ở Sidebar.", {}
+    try:
+        t0 = time.time()
+        success, err, stats = run_async_in_thread(
+            _execute_gemini_live_call,
+            api_key=api_key,
+            model=model,
+            user_text=user_text,
+            user_audio_bytes=user_audio_bytes,
+            voice_name=voice_name,
+            thinking_level=thinking_level,
+            system_instruction=system_instruction,
+            target_language_code=target_language_code,
+            timeout_sec=timeout_sec
+        )
+        elapsed = time.time() - t0
+        stats["elapsed_time"] = elapsed
+        return success, err, stats
+    except Exception as e:
+        return False, f"Lỗi Gemini Live API: {str(e)}", {}
+
+def transcribe_audio_multimodal(
+    api_key: str,
+    audio_bytes: bytes,
+    mime_type: str = "audio/wav",
+    model: str = "gemini-3.5-flash",
+    prompt_mode: str = "verbatim"
+):
+    """Bóc tách âm thanh sang văn bản toàn diện bằng Gemini Multimodal Audio."""
+    if not api_key:
+        return False, "Vui lòng nhập Gemini API Key ở Sidebar.", {}
+    try:
+        t0 = time.time()
+        client = get_genai_client(api_key)
+        if prompt_mode == "summary":
+            prompt = (
+                "Hãy lắng nghe kỹ toàn bộ file âm thanh và thực hiện 2 nhiệm vụ:\n"
+                "1. 📝 TÓM TẮT ĐIỀU HÀNH: Tóm lược các ý chính, kết luận, số liệu và hành động quan trọng nhất.\n"
+                "2. 📄 BẢN GHI ĐẦY ĐỦ: Bóc tách lại nội dung chi tiết theo từng người nói hoặc từng phân đoạn chính."
+            )
+        else:
+            prompt = (
+                "Hãy chuyển đổi toàn bộ lời nói trong file âm thanh này thành văn bản chính xác 100% (Verbatim Speech-to-Text).\n"
+                "- Giữ nguyên tiếng Việt có dấu chuẩn xác.\n"
+                "- Ngắt câu, chia đoạn văn bản rõ ràng, hợp lý theo ngữ cảnh.\n"
+                "- Nếu có nhiều người nói, hãy phân tách rõ từng người nói (ví dụ: Người 1:, Người 2:)."
+            )
+            
+        part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+        resp = client.models.generate_content(
+            model=model,
+            contents=[part, prompt]
+        )
+        elapsed = time.time() - t0
+        text_out = resp.text.strip()
+        stats = {
+            "total_words": len(text_out.split()),
+            "total_chars": len(text_out),
+            "elapsed_time": elapsed,
+            "model_used": model
+        }
+        return True, text_out, stats
+    except Exception as e:
+        return False, f"Lỗi bóc tách âm thanh: {str(e)}", {}
+
 def get_deepseek_client(api_key: str):
     """Create and return an OpenAI client configured for DeepSeek API."""
     if not api_key or not OPENAI_AVAILABLE:
@@ -820,6 +1143,34 @@ if "deepseek_sample_selected" not in st.session_state:
 
 if "chat_provider" not in st.session_state:
     st.session_state.chat_provider = "gemini"
+
+# Live API Session States
+if "live_dialog_history" not in st.session_state:
+    st.session_state.live_dialog_history = []
+
+if "last_live_audio_response" not in st.session_state:
+    st.session_state.last_live_audio_response = None
+
+if "last_live_transcript" not in st.session_state:
+    st.session_state.last_live_transcript = ""
+
+if "last_live_thought" not in st.session_state:
+    st.session_state.last_live_thought = ""
+
+if "last_live_stats" not in st.session_state:
+    st.session_state.last_live_stats = {}
+
+if "last_stt_result" not in st.session_state:
+    st.session_state.last_stt_result = ""
+
+if "last_stt_stats" not in st.session_state:
+    st.session_state.last_stt_stats = {}
+
+if "last_translate_audio" not in st.session_state:
+    st.session_state.last_translate_audio = None
+
+if "last_translate_text" not in st.session_state:
+    st.session_state.last_translate_text = ""
 
 # ========================================================
 # Sidebar: API Key Configuration & Hyperparameters
@@ -1131,8 +1482,9 @@ client_config = types.GenerateContentConfig(
 # ========================================================
 # Main Navigation Tabs
 # ========================================================
-tab_chat, tab_vision, tab_docs_extract, tab_tools, tab_docs = st.tabs([
+tab_chat, tab_live_api, tab_vision, tab_docs_extract, tab_tools, tab_docs = st.tabs([
     "💬 Trò chuyện Chatbot",
+    "🎙️ Gemini Live API (Voice & Audio)",
     "🖼️ Thị giác Đa phương thức (Vision)",
     "📄 Trích xuất Tài liệu (PDF & DOCX)",
     "⚡ Prompt Lab & Tác vụ mẫu",
@@ -1368,7 +1720,727 @@ with tab_chat:
                         })
 
 # ========================================================
-# TAB 2: 🖼️ Thị giác Đa phương thức (Vision / Multimodal)
+# TAB 2: 🎙️ Gemini Live API (Voice, Audio & Realtime STT)
+# ========================================================
+with tab_live_api:
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+            <div>
+                <h3 style="margin: 0; display: inline-flex; align-items: center; gap: 10px;">
+                    🎙️ Gemini Live API — Voice & Realtime Audio Studio
+                </h3>
+            </div>
+            <div>
+                <span class="live-badge"><span class="live-pulse-dot"></span> LIVE WEBSOCKET</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    st.markdown(
+        """
+        <div class="voice-studio-card">
+            <b>✨ Trải nghiệm thế hệ mô hình Gemini Live API mới nhất từ Google:</b><br>
+            • Kết nối phiên làm việc hai chiều độ trễ cực thấp (Bidirectional WebSocket Streaming).<br>
+            • Tiếp nhận âm thanh trực tiếp (Microphone / File), nhận diện giọng nói (STT), suy luận tư duy sâu (Extended Thinking CoT).<br>
+            • Tạo phản hồi bằng giọng nói tự nhiên nguyên bản (Native PCM 24kHz Studio Quality) kèm văn bản phiên âm hai chiều đồng bộ.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if not active_key:
+        st.warning("⚠️ **Vui lòng nhập Google Gemini API Key tại thanh bên trái (Sidebar) để kích hoạt tính năng Gemini Live API!**")
+
+    # 1. Top Settings & Model Selector Bar
+    col_live_m, col_live_v, col_live_cfg = st.columns([1.5, 1.1, 1.4], gap="medium")
+    
+    with col_live_m:
+        live_model_options = [
+            "gemini-2.5-flash-native-audio-latest — 🗣️ Native Audio Dialog (Khuyên dùng)",
+            "gemini-3.1-flash-live-preview — ⚡ Gemini 3 Flash Live (Tốc độ cao)",
+            "gemini-3.5-live-translate-preview — 🌐 Gemini 3.5 Live Translate (Dịch thuật)",
+            "gemini-3.5-transcribe-live — 📝 Gemini 3.5 Transcribe Live (Bóc tách STT)",
+            "gemini-3.8-live — 🚀 Gemini 3.8 Live (Thế hệ mới nhất)",
+            "gemini-3.8-live-extended-thinking — 🧠 Gemini 3.8 Extended Thinking (Suy luận CoT)"
+        ]
+        
+        selected_live_option = st.selectbox(
+            "🤖 Chọn model Live API:",
+            options=live_model_options,
+            index=0,
+            key="live_model_selectbox",
+            help="Các mô hình chính thức hỗ trợ Gemini Live API (Audio-in / Audio-out / Realtime STT) trong Google GenAI SDK"
+        )
+        selected_live_model_id = selected_live_option.split(" — ")[0].strip()
+
+    with col_live_v:
+        voice_options = [
+            ("Aoede", "Aoede (Nữ - Trong trẻo, tự nhiên - Khuyên dùng)"),
+            ("Kore", "Kore (Nữ - Dịu dàng, truyền cảm)"),
+            ("Puck", "Puck (Nam - Năng động, tự nhiên)"),
+            ("Charon", "Charon (Nam - Trầm ấm, chuyên nghiệp)"),
+            ("Fenrir", "Fenrir (Nam - Dứt khoát, mạnh mẽ)")
+        ]
+        selected_voice_tuple = st.selectbox(
+            "🎙️ Giọng đọc AI (Prebuilt Voice):",
+            options=voice_options,
+            format_func=lambda x: x[1],
+            index=0,
+            key="live_voice_selectbox",
+            help="Google Gemini Prebuilt Voices tổng hợp âm thanh tự nhiên chuẩn Studio 24kHz"
+        )
+        selected_voice_name = selected_voice_tuple[0]
+
+    with col_live_cfg:
+        live_thinking_level = "MEDIUM"
+        live_target_lang = "vi"
+        live_transcribe_mode = "SMART"
+        
+        if "extended-thinking" in selected_live_model_id:
+            live_thinking_level = st.select_slider(
+                "🧠 Mức độ Suy luận (Thinking Level):",
+                options=["LOW", "MEDIUM", "HIGH"],
+                value="MEDIUM",
+                key="live_thinking_level_slider",
+                help="Mức độ tư duy logic phân tích của mô hình trước khi phát ra câu trả lời âm thanh"
+            )
+        elif "translate" in selected_live_model_id:
+            lang_dict = {
+                "vi": "🇻🇳 Tiếng Việt (Vietnamese)",
+                "en": "🇬🇧 Tiếng Anh (English)",
+                "ja": "🇯🇵 Tiếng Nhật (Japanese)",
+                "ko": "🇰🇷 Tiếng Hàn (Korean)",
+                "zh": "🇨🇳 Tiếng Trung (Chinese)",
+                "fr": "🇫🇷 Tiếng Pháp (French)",
+                "de": "🇩🇪 Tiếng Đức (German)"
+            }
+            selected_lang_key = st.selectbox(
+                "🎯 Dịch sang Ngôn ngữ:",
+                options=list(lang_dict.keys()),
+                format_func=lambda k: lang_dict[k],
+                index=0,
+                key="live_target_lang_select"
+            )
+            live_target_lang = selected_lang_key
+        elif "transcribe" in selected_live_model_id:
+            live_transcribe_mode = st.radio(
+                "Định dạng bóc tách STT:",
+                ["SMART (Dọn dẹp từ đệm, chuẩn hóa câu)", "VERBATIM (Nguyên văn từng từ)"],
+                index=0,
+                horizontal=True,
+                key="live_transcribe_mode_radio"
+            )
+        else:
+            st.caption("ℹ️ Trạng thái Engine: **Native Audio WebSocket**")
+            st.markdown('<span class="metric-chip">Độ trễ: Cực thấp</span><span class="metric-chip">Âm thanh: 24kHz Mono</span>', unsafe_allow_html=True)
+
+    with st.expander("🛠️ Cấu hình Chỉ dẫn Hệ thống (System Instruction) cho Live Voice", expanded=False):
+        live_sys_prompt = st.text_area(
+            "Hướng dẫn phong cách cho AI:",
+            value="Bạn là trợ lý AI tiếng Việt thân thiện, phát âm rõ ràng, giao tiếp tự nhiên và giải thích súc tích, ngắn gọn.",
+            key="live_system_instruction_input",
+            height=70
+        )
+
+    st.markdown("---")
+
+    # 2. Main Feature Mode Selector (4 Functional Modes)
+    live_sub_mode = st.radio(
+        "🎯 Chọn Chức năng Kiểm thử Live API:",
+        [
+            "🗣️ Chế độ 1: Hội thoại Giọng nói Trực tiếp (Speech-to-Speech & Voice Chat)",
+            "📝 Chế độ 2: Chuyển Giọng nói thành Văn bản Realtime (Realtime STT / Transcribe Live)",
+            "🌐 Chế độ 3: Dịch thuật Giọng nói Tức thì (Live Audio Translate)",
+            "📞 Chế độ 4: Phiên Hội thoại AI Thời gian thực (Multi-turn Live Dialog Session)"
+        ],
+        horizontal=True,
+        key="live_api_submode_radio"
+    )
+
+    # ========================================================
+    # CHẾ ĐỘ 1: HỘI THOẠI GIỌNG NÓI TRỰC TIẾP
+    # ========================================================
+    if "Chế độ 1" in live_sub_mode:
+        col_c1_in, col_c1_out = st.columns([1, 1], gap="large")
+        
+        with col_c1_in:
+            st.markdown("##### 📥 Đầu vào Âm thanh hoặc Văn bản:")
+            input_method = st.radio(
+                "Chọn hình thức tương tác:",
+                ["🎙️ Nói qua Microphone", "📁 Tải lên tệp âm thanh", "✍️ Nhập câu hỏi văn bản"],
+                horizontal=True,
+                key="ch1_input_method"
+            )
+            
+            c1_audio_bytes = None
+            c1_text_prompt = ""
+            
+            if "Microphone" in input_method:
+                st.caption("💡 Bấm vào nút Micro bên dưới, nói câu hỏi của bạn và bấm dừng để gửi:")
+                mic_recorded = st.audio_input("Ghi âm giọng nói trực tiếp:", key="ch1_mic_input")
+                if mic_recorded:
+                    c1_audio_bytes = mic_recorded.getvalue()
+                    st.caption(f"🎤 Đã thu âm: **{len(c1_audio_bytes)/1024:.1f} KB** ({mic_recorded.type})")
+                    
+                c1_extra_text = st.text_input("Ghi chú/câu hỏi bổ sung kèm theo âm thanh (tùy chọn):", key="ch1_extra_mic_text")
+                if c1_extra_text.strip():
+                    c1_text_prompt = c1_extra_text.strip()
+                    
+            elif "Tải lên" in input_method:
+                uploaded_audio = st.file_uploader(
+                    "Tải lên tệp âm thanh (WAV, MP3, M4A, OGG):",
+                    type=["wav", "mp3", "m4a", "ogg"],
+                    key="ch1_file_audio_upload"
+                )
+                if uploaded_audio:
+                    c1_audio_bytes = uploaded_audio.getvalue()
+                    st.audio(c1_audio_bytes, format=uploaded_audio.type)
+                c1_file_prompt = st.text_input("Câu hỏi cần AI trả lời về tệp âm thanh này:", value="Hãy lắng nghe và phản hồi lại nội dung trong đoạn âm thanh này.", key="ch1_file_prompt")
+                c1_text_prompt = c1_file_prompt
+                
+            else:
+                c1_text_input = st.text_area(
+                    "Nhập câu hỏi để nghe Gemini phản hồi bằng giọng nói:",
+                    value="Xin chào bạn! Bạn có thể giới thiệu về khả năng xử lý giọng nói Live API của mình không?",
+                    height=100,
+                    key="ch1_text_area_input"
+                )
+                c1_text_prompt = c1_text_input
+                
+            # Quick Starters for Live Voice
+            st.caption("💡 Gợi ý câu hỏi nhanh:")
+            col_qs1, col_qs2 = st.columns(2)
+            with col_qs1:
+                if st.button("⛅ Thời tiết hôm nay thế nào?", key="btn_qs_weather", use_container_width=True):
+                    c1_text_prompt = "Hãy đóng vai một trợ lý thời tiết và dự báo thời tiết một ngày đẹp trời bằng giọng nói ấm áp."
+            with col_qs2:
+                if st.button("🤖 Giới thiệu bản thân", key="btn_qs_intro", use_container_width=True):
+                    c1_text_prompt = "Hãy giới thiệu về bản thân bạn, các mô hình Gemini Live API và ưu điểm của việc nói chuyện trực tiếp qua âm thanh."
+
+            run_c1_btn = st.button("🚀 Bắt đầu Hội thoại Live (Gửi tới Gemini)", type="primary", use_container_width=True, key="btn_run_ch1")
+
+        with col_c1_out:
+            st.markdown("##### 📤 Phản hồi Giọng nói & Phiên âm:")
+            c1_out_box = st.container()
+            
+            if run_c1_btn:
+                if not active_key:
+                    st.error("❌ Vui lòng nhập Gemini API Key ở Sidebar để tiếp tục.")
+                elif not c1_audio_bytes and not c1_text_prompt.strip():
+                    st.warning("⚠️ Vui lòng ghi âm giọng nói hoặc nhập câu hỏi trước khi gửi.")
+                else:
+                    with st.spinner(f"Đang kết nối WebSocket tới `{selected_live_model_id}` và truyền luồng âm thanh..."):
+                        t_call_start = time.time()
+                        success, err, stats = call_gemini_live(
+                            api_key=active_key,
+                            model=selected_live_model_id,
+                            user_text=c1_text_prompt if c1_text_prompt.strip() else None,
+                            user_audio_bytes=c1_audio_bytes,
+                            voice_name=selected_voice_name,
+                            thinking_level=live_thinking_level,
+                            system_instruction=live_sys_prompt,
+                            target_language_code=live_target_lang if "translate" in selected_live_model_id else None
+                        )
+                        call_elapsed = time.time() - t_call_start
+                        
+                        if success:
+                            st.session_state.last_live_audio_response = stats.get("audio_wav")
+                            st.session_state.last_live_transcript = stats.get("output_text", "")
+                            st.session_state.last_live_thought = stats.get("thought_text", "")
+                            st.session_state.last_live_stats = stats
+                            
+                            st.success(f"✅ Đã nhận phản hồi từ **{selected_live_model_id}** trong **{call_elapsed:.2f} giây**!")
+                            
+                            # Metrics
+                            dur = stats.get("duration_sec", 0.0)
+                            chunks = stats.get("chunks_count", 0)
+                            st.markdown(
+                                f'<span class="metric-chip">⚡ Độ trễ: {call_elapsed:.2f}s</span>'
+                                f'<span class="metric-chip">⏱️ Thời lượng audio: {dur:.2f}s</span>'
+                                f'<span class="metric-chip">🎙️ Giọng: {selected_voice_name}</span>'
+                                f'<span class="metric-chip">📦 Gói âm thanh: {chunks} chunks</span>',
+                                unsafe_allow_html=True
+                            )
+                            
+                            # Audio player
+                            wav_data = stats.get("audio_wav")
+                            if wav_data:
+                                st.markdown("##### 🔊 Nghe phản hồi giọng nói của Gemini:")
+                                st.audio(wav_data, format="audio/wav", autoplay=True)
+                                
+                                st.download_button(
+                                    "📥 Tải tệp giọng nói phản hồi (.wav)",
+                                    data=wav_data,
+                                    file_name="gemini_live_response.wav",
+                                    mime="audio/wav",
+                                    key="btn_dl_live_wav"
+                                )
+                                
+                            # Two-way transcriptions
+                            if stats.get("input_text"):
+                                st.markdown(
+                                    f"""
+                                    <div class="dialog-turn-user">
+                                        <b>👤 Lời nói của bạn (Transcribed STT):</b><br>
+                                        <span style="color: #e2e8f0;">{stats.get("input_text")}</span>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+                                
+                            if stats.get("output_text"):
+                                st.markdown(
+                                    f"""
+                                    <div class="dialog-turn-ai">
+                                        <b>🤖 Gemini nói:</b><br>
+                                        <span style="color: #38bdf8; font-size: 1.05rem;">{stats.get("output_text")}</span>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+                                
+                            # Extended Thinking Box
+                            if stats.get("thought_text"):
+                                with st.expander("🧠 Xem Quá trình Suy nghĩ Nội tâm của AI (Extended Thinking / CoT)", expanded=True):
+                                    st.markdown(f"```text\n{stats.get('thought_text')}\n```")
+                        else:
+                            st.error(f"❌ {err}")
+                            if "1007" in err or "modality" in err.lower():
+                                st.info("💡 Lưu ý: Với model `gemini-3.5-transcribe-live`, hãy chuyển sang **Chế độ 2** (Chuyển giọng nói sang văn bản).")
+                                
+            elif st.session_state.get("last_live_audio_response"):
+                wav_cached = st.session_state.get("last_live_audio_response")
+                stats_cached = st.session_state.get("last_live_stats", {})
+                
+                c1_out_box.caption(f"⏱️ Phiên gần nhất | Model: `{stats_cached.get('model', selected_live_model_id)}` | Giọng: `{stats_cached.get('voice', selected_voice_name)}`")
+                if wav_cached:
+                    c1_out_box.audio(wav_cached, format="audio/wav")
+                    c1_out_box.download_button(
+                        "📥 Tải tệp giọng nói gần nhất (.wav)",
+                        data=wav_cached,
+                        file_name="gemini_live_response.wav",
+                        mime="audio/wav",
+                        key="btn_dl_live_wav_cached"
+                    )
+                if stats_cached.get("output_text"):
+                    c1_out_box.markdown(
+                        f"""
+                        <div class="dialog-turn-ai">
+                            <b>🤖 Gemini nói:</b><br>
+                            <span style="color: #38bdf8;">{stats_cached.get("output_text")}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+            else:
+                c1_out_box.info("Phản hồi giọng nói và văn bản phiên âm của Gemini Live API sẽ hiển thị tại đây sau khi bạn gửi.")
+
+    # ========================================================
+    # CHẾ ĐỘ 2: CHUYỂN GIỌNG NÓI THÀNH VĂN BẢN (REALTIME STT)
+    # ========================================================
+    elif "Chế độ 2" in live_sub_mode:
+        col_stt1, col_stt2 = st.columns([1, 1], gap="large")
+        
+        with col_stt1:
+            st.markdown("##### 🎙️ Đầu vào Âm thanh cần Chuyển thành Văn bản:")
+            stt_engine = st.selectbox(
+                "Chọn Engine bóc tách STT:",
+                [
+                    "⚡ Gemini 3.5 Transcribe Live (Chuyên dụng thời gian thực)",
+                    "✨ Gemini Flash Multimodal Audio (Bóc tách chi tiết & Tự động định dạng)"
+                ],
+                index=0,
+                key="stt_engine_select"
+            )
+            
+            stt_input_choice = st.radio(
+                "Nguồn âm thanh:",
+                ["🎙️ Ghi âm trực tiếp qua Micro", "📁 Tải lên tệp âm thanh (WAV, MP3, M4A, OGG)"],
+                horizontal=True,
+                key="stt_input_choice"
+            )
+            
+            stt_audio_bytes = None
+            stt_audio_name = "mic_recording.wav"
+            stt_mime = "audio/wav"
+            
+            if "Micro" in stt_input_choice:
+                st.caption("💡 Bấm vào nút Micro bên dưới, nói nội dung cần bóc tách văn bản:")
+                stt_mic = st.audio_input("Ghi âm lời nói:", key="stt_mic_recorder")
+                if stt_mic:
+                    stt_audio_bytes = stt_mic.getvalue()
+                    st.caption(f"🎤 Đã thu âm: **{len(stt_audio_bytes)/1024:.1f} KB**")
+            else:
+                stt_file = st.file_uploader(
+                    "Tải lên tệp âm thanh bài giảng, cuộc họp, phỏng vấn:",
+                    type=["wav", "mp3", "m4a", "ogg"],
+                    key="stt_file_uploader"
+                )
+                if stt_file:
+                    stt_audio_bytes = stt_file.getvalue()
+                    stt_audio_name = stt_file.name
+                    stt_mime = stt_file.type or "audio/wav"
+                    st.audio(stt_audio_bytes, format=stt_mime)
+                    
+            stt_format_style = st.radio(
+                "Phong cách định dạng đầu ra:",
+                ["📝 Verbatim (Nguyên văn từng từ có dấu)", "📋 Summary & Structured (Tóm tắt ý chính và chia mục)"],
+                index=0,
+                key="stt_format_style_radio"
+            )
+            
+            run_stt_btn = st.button("📝 Bắt đầu Chuyển giọng nói sang Văn bản", type="primary", use_container_width=True, key="btn_run_stt")
+
+        with col_stt2:
+            st.markdown("##### 📄 Kết quả Văn bản Bóc tách (Speech-to-Text):")
+            stt_out_box = st.container()
+            
+            if run_stt_btn:
+                if not active_key:
+                    st.error("❌ Vui lòng nhập Gemini API Key ở Sidebar để tiếp tục.")
+                elif not stt_audio_bytes:
+                    st.warning("⚠️ Vui lòng ghi âm qua Micro hoặc tải lên một tệp âm thanh.")
+                else:
+                    with st.spinner("Đang xử lý nhận diện giọng nói và bóc tách văn bản..."):
+                        t0 = time.time()
+                        if "Transcribe Live" in stt_engine:
+                            # Use gemini-3.5-transcribe-live
+                            success, err, stats = call_gemini_live(
+                                api_key=active_key,
+                                model="gemini-3.5-transcribe-live",
+                                user_audio_bytes=stt_audio_bytes,
+                                system_instruction="Transcribe speech accurately in Vietnamese with proper punctuation and capitalization."
+                            )
+                            elapsed = time.time() - t0
+                            if success:
+                                text_result = stats.get("output_text") or stats.get("input_text") or ""
+                                if not text_result.strip():
+                                    # Fallback to multimodal audio if live returned empty
+                                    _, text_result, _ = transcribe_audio_multimodal(
+                                        api_key=active_key,
+                                        audio_bytes=stt_audio_bytes,
+                                        mime_type=stt_mime,
+                                        model="gemini-3.5-flash",
+                                        prompt_mode="summary" if "Summary" in stt_format_style else "verbatim"
+                                    )
+                            else:
+                                # Fallback to multimodal audio on live API error
+                                success, text_result, _ = transcribe_audio_multimodal(
+                                    api_key=active_key,
+                                    audio_bytes=stt_audio_bytes,
+                                    mime_type=stt_mime,
+                                    model="gemini-3.5-flash",
+                                    prompt_mode="summary" if "Summary" in stt_format_style else "verbatim"
+                                )
+                                err = ""
+                        else:
+                            success, text_result, stats = transcribe_audio_multimodal(
+                                api_key=active_key,
+                                audio_bytes=stt_audio_bytes,
+                                mime_type=stt_mime,
+                                model="gemini-3.5-flash",
+                                prompt_mode="summary" if "Summary" in stt_format_style else "verbatim"
+                            )
+                            elapsed = time.time() - t0
+                            
+                        if success and text_result:
+                            st.session_state.last_stt_result = text_result
+                            w_cnt = len(text_result.split())
+                            c_cnt = len(text_result)
+                            st.session_state.last_stt_stats = {"words": w_cnt, "chars": c_cnt, "time": elapsed}
+                            
+                            st.success(f"✅ Bóc tách giọng nói thành công trong **{elapsed:.2f} giây**!")
+                            st.markdown(
+                                f'<span class="metric-chip">⚡ Thời gian: {elapsed:.2f}s</span>'
+                                f'<span class="metric-chip">📝 Từ: {w_cnt:,}</span>'
+                                f'<span class="metric-chip">🔤 Ký tự: {c_cnt:,}</span>',
+                                unsafe_allow_html=True
+                            )
+                            
+                            st.text_area("Văn bản bóc tách:", value=text_result, height=260, key="stt_result_textarea")
+                            
+                            col_dl_t1, col_dl_t2 = st.columns(2)
+                            with col_dl_t1:
+                                st.download_button(
+                                    "📥 Tải tệp văn bản (.txt)",
+                                    data=text_result,
+                                    file_name="gemini_transcription.txt",
+                                    mime="text/plain",
+                                    key="btn_dl_stt_txt"
+                                )
+                            with col_dl_t2:
+                                st.download_button(
+                                    "📥 Tải tệp Markdown (.md)",
+                                    data=f"# Bản ghi lời nói (Speech-to-Text)\n\n{text_result}",
+                                    file_name="gemini_transcription.md",
+                                    mime="text/markdown",
+                                    key="btn_dl_stt_md"
+                                )
+                        else:
+                            st.error(f"❌ {err or 'Không nhận diện được nội dung âm thanh hoặc tệp bị rỗng.'}")
+            elif st.session_state.get("last_stt_result"):
+                cached_stt = st.session_state.get("last_stt_result")
+                cached_stt_stats = st.session_state.get("last_stt_stats", {})
+                stt_out_box.caption(f"⏱️ Lần chạy gần nhất: {cached_stt_stats.get('time', 0):.2f}s | Từ: {cached_stt_stats.get('words', 0)}")
+                stt_out_box.text_area("Văn bản bóc tách gần nhất:", value=cached_stt, height=240, key="stt_cached_textarea")
+                stt_out_box.download_button(
+                    "📥 Tải tệp văn bản (.txt)",
+                    data=cached_stt,
+                    file_name="gemini_transcription.txt",
+                    mime="text/plain",
+                    key="btn_dl_cached_stt_txt"
+                )
+            else:
+                stt_out_box.info("Văn bản sau khi nhận diện giọng nói sẽ hiển thị tại đây.")
+
+    # ========================================================
+    # CHẾ ĐỘ 3: DỊCH THUẬT GIỌNG NÓI TỨC THÌ (LIVE TRANSLATE)
+    # ========================================================
+    elif "Chế độ 3" in live_sub_mode:
+        col_tr1, col_tr2 = st.columns([1, 1], gap="large")
+        
+        with col_tr1:
+            st.markdown("##### 🌐 Cấu hình Dịch thuật Giọng nói:")
+            
+            col_lg1, col_lg2 = st.columns(2)
+            with col_lg1:
+                tr_src_lang = st.selectbox(
+                    "Ngôn ngữ nguồn (Nói):",
+                    ["🇻🇳 Tiếng Việt", "🇬🇧 Tiếng Anh (English)", "🇯🇵 Tiếng Nhật", "🇰🇷 Tiếng Hàn", "🇨🇳 Tiếng Trung"],
+                    index=0,
+                    key="tr_src_lang_select"
+                )
+            with col_lg2:
+                tr_tgt_lang_dict = {
+                    "en": "🇬🇧 Tiếng Anh (English)",
+                    "vi": "🇻🇳 Tiếng Việt (Vietnamese)",
+                    "ja": "🇯🇵 Tiếng Nhật (Japanese)",
+                    "ko": "🇰🇷 Tiếng Hàn (Korean)",
+                    "zh": "🇨🇳 Tiếng Trung (Chinese)",
+                    "fr": "🇫🇷 Tiếng Pháp (French)",
+                    "de": "🇩🇪 Tiếng Đức (German)"
+                }
+                tr_tgt_code = st.selectbox(
+                    "Ngôn ngữ đích (Dịch sang & Phát âm):",
+                    options=list(tr_tgt_lang_dict.keys()),
+                    format_func=lambda k: tr_tgt_lang_dict[k],
+                    index=0,
+                    key="tr_tgt_code_select"
+                )
+                
+            tr_input_mode = st.radio("Cách thức nhập:", ["🎙️ Nói qua Micro", "✍️ Nhập câu cần dịch"], horizontal=True, key="tr_input_mode_radio")
+            
+            tr_audio_bytes = None
+            tr_text_input = ""
+            
+            if "Micro" in tr_input_mode:
+                st.caption("💡 Bấm nút Micro và nói câu cần dịch:")
+                tr_mic = st.audio_input("Nói để dịch tức thì:", key="tr_mic_input")
+                if tr_mic:
+                    tr_audio_bytes = tr_mic.getvalue()
+            else:
+                tr_text_input = st.text_area(
+                    "Nhập câu tiếng Việt hoặc tiếng Anh cần dịch:",
+                    value="Xin chào, rất vui được gặp bạn! Tôi đang thử nghiệm tính năng dịch thuật giọng nói thời gian thực.",
+                    height=90,
+                    key="tr_text_input_area"
+                )
+                
+            run_trans_btn = st.button("🌐 Dịch & Phát Giọng nói Ngay", type="primary", use_container_width=True, key="btn_run_trans")
+
+        with col_tr2:
+            st.markdown("##### 🔊 Bản dịch & Phát âm Giọng nói Chuẩn:")
+            tr_out_box = st.container()
+            
+            if run_trans_btn:
+                if not active_key:
+                    st.error("❌ Vui lòng nhập Gemini API Key ở Sidebar để tiếp tục.")
+                elif not tr_audio_bytes and not tr_text_input.strip():
+                    st.warning("⚠️ Vui lòng ghi âm hoặc nhập câu cần dịch.")
+                else:
+                    tgt_name = tr_tgt_lang_dict.get(tr_tgt_code, tr_tgt_code)
+                    sys_trans_prompt = (
+                        f"You are a professional realtime voice translator. "
+                        f"Translate the user's speech or text directly into {tgt_name}. "
+                        f"Respond with the spoken translation in natural, fluent pronunciation. "
+                        f"Do not add commentary, just translate accurately."
+                    )
+                    
+                    with st.spinner(f"Đang dịch và tổng hợp giọng nói sang {tgt_name}..."):
+                        t0 = time.time()
+                        success, err, stats = call_gemini_live(
+                            api_key=active_key,
+                            model="gemini-3.5-live-translate-preview" if "translate" in selected_live_model_id else selected_live_model_id,
+                            user_text=tr_text_input if tr_text_input.strip() else None,
+                            user_audio_bytes=tr_audio_bytes,
+                            voice_name=selected_voice_name,
+                            system_instruction=sys_trans_prompt,
+                            target_language_code=tr_tgt_code
+                        )
+                        elapsed = time.time() - t0
+                        
+                        if success:
+                            st.session_state.last_translate_audio = stats.get("audio_wav")
+                            st.session_state.last_translate_text = stats.get("output_text", "")
+                            
+                            st.success(f"✅ Dịch thành công sang **{tgt_name}** trong **{elapsed:.2f} giây**!")
+                            
+                            wav_tr = stats.get("audio_wav")
+                            if wav_tr:
+                                st.markdown("##### 🔊 Nghe câu dịch phát âm bản ngữ:")
+                                st.audio(wav_tr, format="audio/wav", autoplay=True)
+                                st.download_button(
+                                    "📥 Tải tệp âm thanh bản dịch (.wav)",
+                                    data=wav_tr,
+                                    file_name=f"gemini_translated_{tr_tgt_code}.wav",
+                                    mime="audio/wav",
+                                    key="btn_dl_tr_wav"
+                                )
+                                
+                            if stats.get("input_text"):
+                                st.markdown(f"**👤 Bản gốc đã nói:** `{stats.get('input_text')}`")
+                            st.markdown(
+                                f"""
+                                <div class="dialog-turn-ai">
+                                    <b>🌐 Bản dịch ({tgt_name}):</b><br>
+                                    <span style="color: #38bdf8; font-size: 1.15rem; font-weight: 600;">{stats.get("output_text")}</span>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.error(f"❌ {err}")
+            elif st.session_state.get("last_translate_audio"):
+                wav_cached = st.session_state.get("last_translate_audio")
+                text_cached = st.session_state.get("last_translate_text", "")
+                tr_out_box.audio(wav_cached, format="audio/wav")
+                if text_cached:
+                    tr_out_box.markdown(
+                        f"""
+                        <div class="dialog-turn-ai">
+                            <b>🌐 Bản dịch gần nhất:</b><br>
+                            <span style="color: #38bdf8; font-size: 1.1rem;">{text_cached}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+            else:
+                tr_out_box.info("Bản dịch âm thanh và văn bản sẽ xuất hiện tại đây sau khi bạn bấm Dịch.")
+
+    # ========================================================
+    # CHẾ ĐỘ 4: PHIÊN HỘI THOẠI AI THỜI GIAN THỰC (MULTI-TURN)
+    # ========================================================
+    else:
+        st.markdown("##### 📞 Phiên Hội thoại Thoại Đa lượt (Multi-turn Live Dialog):")
+        st.caption("Trò chuyện liên tục với Gemini như một cuộc gọi thoại trực tiếp. Mỗi câu trả lời của AI sẽ phát âm thanh và hiển thị phiên âm.")
+        
+        # Display conversation history
+        dialog_history = st.session_state.live_dialog_history
+        if dialog_history:
+            for idx, turn in enumerate(dialog_history):
+                role = turn.get("role")
+                if role == "user":
+                    st.markdown(
+                        f"""
+                        <div class="dialog-turn-user">
+                            <b>👤 Bạn:</b> {turn.get("text", "")}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                    if turn.get("audio"):
+                        st.audio(turn.get("audio"), format="audio/wav")
+                else:
+                    st.markdown(
+                        f"""
+                        <div class="dialog-turn-ai">
+                            <b>🤖 Gemini ({turn.get("voice", selected_voice_name)}):</b><br>
+                            <span style="color: #38bdf8; font-size: 1.05rem;">{turn.get("text", "")}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                    if turn.get("audio"):
+                        st.audio(turn.get("audio"), format="audio/wav")
+                    if turn.get("thought"):
+                        with st.expander(f"🧠 Tư duy lượt {idx // 2 + 1}", expanded=False):
+                            st.text(turn.get("thought"))
+        else:
+            st.info("Chưa có lượt hội thoại nào trong phiên này. Hãy bắt đầu nói chuyện với Gemini ở khung bên dưới!")
+
+        # New turn input controls
+        col_nt1, col_nt2 = st.columns([3, 1], gap="medium")
+        with col_nt1:
+            nt_input_type = st.radio("Cách thức phản hồi:", ["🎙️ Nói qua Micro", "✍️ Nhập văn bản"], horizontal=True, key="nt_input_type_radio")
+            nt_audio = None
+            nt_text = ""
+            if "Micro" in nt_input_type:
+                nt_mic_val = st.audio_input("Nói lượt tiếp theo:", key="nt_mic_recorder")
+                if nt_mic_val:
+                    nt_audio = nt_mic_val.getvalue()
+            else:
+                nt_text = st.text_input("Nhập tin nhắn tiếp theo:", key="nt_text_input_field", placeholder="Ví dụ: Bạn có thể giải thích chi tiết hơn được không?")
+                
+        with col_nt2:
+            st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+            send_nt_btn = st.button("💬 Gửi lượt nói", type="primary", use_container_width=True, key="btn_send_next_turn")
+            clear_nt_btn = st.button("🧹 Xóa lịch sử phiên", use_container_width=True, key="btn_clear_live_dialog")
+            
+        if clear_nt_btn:
+            st.session_state.live_dialog_history = []
+            st.success("Đã làm mới phiên hội thoại thoại!")
+            st.rerun()
+            
+        if send_nt_btn:
+            if not active_key:
+                st.error("❌ Vui lòng nhập Gemini API Key ở Sidebar để tiếp tục.")
+            elif not nt_audio and not nt_text.strip():
+                st.warning("⚠️ Vui lòng nói qua Micro hoặc nhập tin nhắn trước khi gửi.")
+            else:
+                with st.spinner(f"Gemini đang lắng nghe và phản hồi bằng giọng nói ({selected_voice_name})..."):
+                    # Build multi-turn context
+                    context_prompt = live_sys_prompt + "\n\nĐây là phiên hội thoại thoại tiếp nối. Hãy trả lời tự nhiên, thân thiện và súc tích."
+                    if dialog_history:
+                        history_summary = "Lịch sử trò chuyện trước đó:\n"
+                        for h in dialog_history[-4:]:  # last 4 turns
+                            history_summary += f"{'Người dùng' if h['role']=='user' else 'Gemini'}: {h.get('text', '')}\n"
+                        context_prompt += "\n" + history_summary
+                        
+                    success, err, stats = call_gemini_live(
+                        api_key=active_key,
+                        model=selected_live_model_id,
+                        user_text=nt_text if nt_text.strip() else None,
+                        user_audio_bytes=nt_audio,
+                        voice_name=selected_voice_name,
+                        thinking_level=live_thinking_level,
+                        system_instruction=context_prompt
+                    )
+                    
+                    if success:
+                        user_spoken_label = stats.get("input_text") or nt_text or "Tin nhắn thoại"
+                        # Append user turn
+                        st.session_state.live_dialog_history.append({
+                            "role": "user",
+                            "text": user_spoken_label,
+                            "audio": nt_audio
+                        })
+                        # Append AI turn
+                        st.session_state.live_dialog_history.append({
+                            "role": "model",
+                            "text": stats.get("output_text", ""),
+                            "audio": stats.get("audio_wav"),
+                            "thought": stats.get("thought_text", ""),
+                            "voice": selected_voice_name
+                        })
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {err}")
+
+# ========================================================
+# TAB 3: 🖼️ Thị giác Đa phương thức (Vision / Multimodal)
 # ========================================================
 with tab_vision:
     col_vt1, col_vt2 = st.columns([2.5, 1.5])
@@ -1622,7 +2694,7 @@ with tab_vision:
             )
 
 # ========================================================
-# TAB 3: 📄 Trích xuất Tài liệu (PDF & DOCX)
+# TAB 4: 📄 Trích xuất Tài liệu (PDF & DOCX)
 # ========================================================
 with tab_docs_extract:
     st.subheader("📄 Trích xuất & Phân tích Tài liệu (PDF & Microsoft Word .docx)")
@@ -2912,7 +3984,7 @@ with tab_docs_extract:
                     )
 
 # ========================================================
-# TAB 4: ⚡ Prompt Lab & Tác vụ mẫu
+# TAB 5: ⚡ Prompt Lab & Tác vụ mẫu
 # ========================================================
 with tab_tools:
     st.subheader("⚡ Prompt Lab: Thử nghiệm Các Tác vụ Phổ biến")
@@ -3008,7 +4080,7 @@ with tab_tools:
                         st.error(f"❌ Lỗi: {str(e)}")
 
 # ========================================================
-# TAB 5: 📚 Thông tin Models & Hướng dẫn API Providers
+# TAB 6: 📚 Thông tin Models & Hướng dẫn API Providers
 # ========================================================
 with tab_docs:
     st.subheader("📚 Hướng dẫn Sử dụng & Quản lý AI API Key (Gemini & DeepSeek)")
@@ -3073,6 +4145,17 @@ for chunk in client.models.generate_content_stream(
             | **gemini-3.6-flash** | Thế hệ mới nhất, tốc độ cực cao | 1M tokens | Chatbot, OCR văn bản, tác vụ thời gian thực |
             | **gemini-3.5-flash** | Cực nhanh, đa phương thức, chi phí thấp | 1M tokens | Web apps, đa phương thức hình ảnh & tài liệu |
             | **gemini-3.1-pro** | Suy luận phức tạp, giải toán & coding sâu | 2M tokens | Phân tích tài liệu lớn, refactor mã nguồn |
+
+            ---
+            ### 🎙️ Danh mục Model Gemini Live API (Thời gian thực & Giọng nói)
+            | Model Live API | Chức năng chính | Output Modality | Điểm nổi bật |
+            | :--- | :--- | :---: | :--- |
+            | **`gemini-2.5-flash-native-audio-latest`** | Native Audio Dialog | `AUDIO` | Giọng nói tự nhiên nguyên bản 24kHz, độ trễ cực thấp |
+            | **`gemini-3.1-flash-live-preview`** | Gemini 3 Flash Live | `AUDIO` | Tốc độ phản hồi hai chiều siêu nhanh |
+            | **`gemini-3.5-live-translate-preview`** | Live Audio Translate | `AUDIO` | Dịch thuật giọng nói tức thì đa ngôn ngữ |
+            | **`gemini-3.5-transcribe-live`** | Realtime Transcribe STT | `TEXT` | Bóc tách âm thanh sang chữ thời gian thực qua WebSocket |
+            | **`gemini-3.8-live`** | Gemini 3.8 Live | `AUDIO` | Thế hệ mới nhất, tổng hợp thoại mượt mà |
+            | **`gemini-3.8-live-extended-thinking`** | Live Extended Thinking | `AUDIO` | Suy luận sâu đa bước (Chain-of-Thought) kết hợp Live Voice |
             """)
 
         # Interactive Model List
