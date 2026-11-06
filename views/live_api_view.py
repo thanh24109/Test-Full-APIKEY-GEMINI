@@ -54,9 +54,16 @@ def render_live_api_tab(active_key: str) -> None:
         voice_options = [
             ("Aoede", "Aoede (Nữ - Trong trẻo, tự nhiên - Khuyên dùng)"),
             ("Kore", "Kore (Nữ - Dịu dàng, truyền cảm)"),
+            ("Zephyr", "Zephyr (Nữ - Tươi sáng, vui tươi)"),
+            ("Leda", "Leda (Nữ - Ấm áp, trò chuyện thân mật)"),
+            ("Callirrhoe", "Callirrhoe (Nữ - Thư thái, nhẹ nhàng)"),
+            ("Autonoe", "Autonoe (Nữ - Rõ ràng, hoạt bát)"),
             ("Puck", "Puck (Nam - Năng động, tự nhiên)"),
             ("Charon", "Charon (Nam - Trầm ấm, chuyên nghiệp)"),
-            ("Fenrir", "Fenrir (Nam - Dứt khoát, mạnh mẽ)")
+            ("Fenrir", "Fenrir (Nam - Dứt khoát, mạnh mẽ)"),
+            ("Orus", "Orus (Nam - Đĩnh đạc, đanh thép)"),
+            ("Enceladus", "Enceladus (Nam - Trầm sâu, truyền cảm)"),
+            ("custom", "Tùy chọn khác (Nhập tên giọng trong 30 giọng Google)...")
         ]
         selected_voice_tuple = st.selectbox(
             "🎙️ Giọng đọc AI toàn cục (Prebuilt Voice):",
@@ -64,9 +71,17 @@ def render_live_api_tab(active_key: str) -> None:
             format_func=lambda x: x[1],
             index=0,
             key="live_voice_selectbox",
-            help="Google Gemini Prebuilt Voices tổng hợp âm thanh tự nhiên chuẩn Studio 24kHz"
+            help="Danh mục Google Gemini Prebuilt Voices tổng hợp âm thanh tự nhiên chuẩn Studio 24kHz"
         )
-        selected_voice_name = selected_voice_tuple[0]
+        if selected_voice_tuple[0] == "custom":
+            custom_voice_input = st.text_input(
+                "Nhập tên giọng đọc Google (VD: Despina, Achernar, Sadachbia, Gacrux...):",
+                value="Zephyr",
+                key="custom_voice_name_input"
+            ).strip()
+            selected_voice_name = custom_voice_input if custom_voice_input else "Aoede"
+        else:
+            selected_voice_name = selected_voice_tuple[0]
 
     with col_live_meta:
         st.markdown(
