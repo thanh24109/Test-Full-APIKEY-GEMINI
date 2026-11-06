@@ -48,40 +48,55 @@ def render_live_api_tab(active_key: str) -> None:
         st.warning("⚠️ **Vui lòng nhập Google Gemini API Key tại thanh bên trái (Sidebar) để kích hoạt tính năng Gemini Live API!**")
 
     # 1. Global Studio Controls: Prebuilt Voice & System Instruction
-    col_live_v, col_live_meta = st.columns([1.5, 2.5], gap="large")
+    col_live_v, col_live_meta = st.columns([1.7, 2.3], gap="large")
     
     with col_live_v:
         voice_options = [
-            ("Aoede", "Aoede (Nữ - Trong trẻo, tự nhiên - Khuyên dùng)"),
-            ("Kore", "Kore (Nữ - Dịu dàng, truyền cảm)"),
-            ("Zephyr", "Zephyr (Nữ - Tươi sáng, vui tươi)"),
-            ("Leda", "Leda (Nữ - Ấm áp, trò chuyện thân mật)"),
-            ("Callirrhoe", "Callirrhoe (Nữ - Thư thái, nhẹ nhàng)"),
-            ("Autonoe", "Autonoe (Nữ - Rõ ràng, hoạt bát)"),
-            ("Puck", "Puck (Nam - Năng động, tự nhiên)"),
-            ("Charon", "Charon (Nam - Trầm ấm, chuyên nghiệp)"),
-            ("Fenrir", "Fenrir (Nam - Dứt khoát, mạnh mẽ)"),
-            ("Orus", "Orus (Nam - Đĩnh đạc, đanh thép)"),
-            ("Enceladus", "Enceladus (Nam - Trầm sâu, truyền cảm)"),
-            ("custom", "Tùy chọn khác (Nhập tên giọng trong 30 giọng Google)...")
+            # Top Khuyên dùng phổ biến nhất
+            ("Aoede", "🌟 Aoede (Nữ - Trong trẻo, tự nhiên - Khuyên dùng)"),
+            ("Kore", "🌸 Kore (Nữ - Dịu dàng, đĩnh đạc, truyền cảm)"),
+            ("Puck", "⚡ Puck (Nam - Năng động, tươi vui, hoạt bát)"),
+            ("Charon", "🎙️ Charon (Nam - Trầm ấm, chuyên nghiệp, trang trọng)"),
+            ("Fenrir", "🐺 Fenrir (Nam - Dứt khoát, mạnh mẽ, quyết đoán)"),
+            ("Zephyr", "✨ Zephyr (Nữ - Tươi sáng, lạc quan, tràn đầy năng lượng)"),
+            ("Leda", "🌿 Leda (Nữ - Ấm áp, trò chuyện tâm sự thân mật)"),
+            ("Orus", "🛡️ Orus (Nam - Đĩnh đạc, chắc chắn, đanh thép)"),
+            ("Callirrhoe", "🍃 Callirrhoe (Nữ - Thư thái, nhẹ nhàng, điềm đạm)"),
+            ("Autonoe", "☀️ Autonoe (Nữ - Rõ ràng, hoạt bát, phát âm chuẩn)"),
+            ("Enceladus", "🌊 Enceladus (Nam - Trầm sâu, lắng đọng, truyền cảm)"),
+            
+            # Các giọng Nữ trong trọn bộ 30 giọng Google
+            ("Algieba", "Algieba (Nữ - Mượt mà, êm ái, thanh thoát)"),
+            ("Despina", "Despina (Nữ - Nhẹ nhàng, trôi chảy, du dương)"),
+            ("Erinome", "Erinome (Nữ - Trong sáng, tròn vành rõ chữ)"),
+            ("Laomedeia", "Laomedeia (Nữ - Hào hứng, sôi nổi, trẻ trung)"),
+            ("Pulcherrima", "Pulcherrima (Nữ - Quý phái, trang nhã, sang trọng)"),
+            ("Sulafat", "Sulafat (Nữ - Thanh thoát, trong vắt, âm cao)"),
+            ("Vindemiatrix", "Vindemiatrix (Nữ - Điềm đạm, chín chắn, sâu lắng)"),
+            
+            # Các giọng Nam trong trọn bộ 30 giọng Google
+            ("Achernar", "Achernar (Nam - Dịu dàng, êm tai, ấm áp)"),
+            ("Achird", "Achird (Nam - Bình thản, nhẹ nhàng, thư giãn)"),
+            ("Algenib", "Algenib (Nam - Khàn nhẹ, cá tính, phong trần)"),
+            ("Alnilam", "Alnilam (Nam - Nghiêm nghị, đĩnh đạc, uy quyền)"),
+            ("Gacrux", "Gacrux (Nam - Trầm bí ẩn, vang dội, quyền lực)"),
+            ("Iapetus", "Iapetus (Nam - Rõ ràng, dứt khoát, dễ nghe)"),
+            ("Rasalgethi", "Rasalgethi (Nam - Mạch lạc, bản tin, phóng viên)"),
+            ("Sadachbia", "Sadachbia (Nam - Trầm lạnh, sắc sảo, hiện đại)"),
+            ("Sadaltager", "Sadaltager (Nam - Nhiệt huyết, tự tin, cuốn hút)"),
+            ("Schedar", "Schedar (Nam - Điềm tĩnh, đều đặn, chuẩn mực)"),
+            ("Umbriel", "Umbriel (Nam - Thong thả, dễ gần, tự nhiên)"),
+            ("Zubenelgenubi", "Zubenelgenubi (Nam - Nhiệt tình, bùng nổ năng lượng)")
         ]
         selected_voice_tuple = st.selectbox(
-            "🎙️ Giọng đọc AI toàn cục (Prebuilt Voice):",
+            "🎙️ Giọng đọc AI toàn cục (Đầy đủ 30 Prebuilt Voices):",
             options=voice_options,
             format_func=lambda x: x[1],
             index=0,
             key="live_voice_selectbox",
-            help="Danh mục Google Gemini Prebuilt Voices tổng hợp âm thanh tự nhiên chuẩn Studio 24kHz"
+            help="Toàn bộ 30 giọng đọc Prebuilt Voices chính thức của Google Gemini API chuẩn Studio 24kHz"
         )
-        if selected_voice_tuple[0] == "custom":
-            custom_voice_input = st.text_input(
-                "Nhập tên giọng đọc Google (VD: Despina, Achernar, Sadachbia, Gacrux...):",
-                value="Zephyr",
-                key="custom_voice_name_input"
-            ).strip()
-            selected_voice_name = custom_voice_input if custom_voice_input else "Aoede"
-        else:
-            selected_voice_name = selected_voice_tuple[0]
+        selected_voice_name = selected_voice_tuple[0]
 
     with col_live_meta:
         st.markdown(
